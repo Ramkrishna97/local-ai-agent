@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Everything under com.example.newaichatapp.agent (planner, executor, reviewer, chat, ollama
+         client) logs at INFO so the console shows the full request -> plan -> step -> review -> result
+         lifecycle, and chat message / response lifecycle, without framework noise. -->
+    <logger name="com.example.newaichatapp.agent" level="INFO" additivity="false">
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+
+    <root level="WARN">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>
