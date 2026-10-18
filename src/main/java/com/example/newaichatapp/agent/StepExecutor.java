@@ -1,271 +1,249 @@
 package com.example.newaichatapp.agent;
 
 import com.example.newaichatapp.agent.config.AgentConfig;
+import com.example.newaichatapp.agent.model.PlanResponse;
 import com.example.newaichatapp.agent.model.PlanStep;
 import com.example.newaichatapp.agent.model.ProgressEvent;
+import com.example.newaichatapp.agent.model.ReviewVerdict;
 import com.example.newaichatapp.agent.service.JavaCodeRunner;
+import com.example.newaichatapp.agent.service.LocalCommandRunner;
 import com.example.newaichatapp.agent.service.PlannerService;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.example.newaichatapp.agent.service.StepReviewService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.io.StringWriter;
-import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.function.Consumer;
 
 @Service
 public class StepExecutor {
 
+    private static final Logger log = LoggerFactory.getLogger(StepExecutor.class);
+
     private final JavaCodeRunner runner;
-    private final PlannerService plannerService;
+    private final PlannerService planner;
+    private final StepReviewService reviewer;
+    private final LocalCommandRunner commands;
 
-    @Autowired
-    public StepExecutor(JavaCodeRunner runner, PlannerService plannerService) {
+    public StepExecutor(JavaCodeRunner runner, PlannerService planner,
+                        StepReviewService reviewer, LocalCommandRunner commands) {
         this.runner = runner;
-        this.plannerService = plannerService;
+        this.planner = planner;
+        this.reviewer = reviewer;
+        this.commands = commands;
     }
 
-    /** Executes all steps in order; stops at first step that can't be made to pass within MAX_RETRIES. */
-    public boolean executeAll(List<PlanStep> steps) {
-        return executeAll(steps, null);
-    }
-
-    /** Same as executeAll, but emits a ProgressEvent after every notable sub-step via onProgress (may be null). */
-    public boolean executeAll(List<PlanStep> steps, Consumer<ProgressEvent> onProgress) {
-        Path baseWorkDir;
+    public boolean executeAll(PlanResponse plan, Consumer<ProgressEvent> sink) {
         try {
-            baseWorkDir = Files.createTempDirectory("planner-agent-");
-        } catch (IOException e) {
-            throw new RuntimeException("Could not create working directory", e);
-        }
-        int failedCount = 0;
-
-        for (PlanStep step : steps) {
-            boolean passed = executeStepWithRetries(step, baseWorkDir, onProgress);
-            step.status = passed ? "PASSED" : "FAILED";
-            if (!passed) failedCount++;
-
-            ProgressEvent resultEvent = ProgressEvent.of("STEP_RESULT",
-                    "Step " + step.stepNumber + ": " + (passed ? "passed" : "failed") +
-                            (step.attempts > 1 ? " after " + step.attempts + " attempts" : ""));
-            resultEvent.stepNumber = step.stepNumber;
-            resultEvent.status = step.status;
-            resultEvent.attempt = step.attempts;
-            resultEvent.step = step;
-            emit(onProgress, resultEvent);
-
-            if (!passed && !AgentConfig.CONTINUE_ON_STEP_FAILURE) {
-                ProgressEvent bail = ProgressEvent.of("STEP_PHASE",
-                        "Step " + step.stepNumber + " failed; stopping pipeline (continueOnFailure=false).");
-                bail.stepNumber = step.stepNumber;
-                emit(onProgress, bail);
-                return false;
+            Path workspace = Files.createTempDirectory("agent-workspace-");
+            StringBuilder acceptedContext = new StringBuilder();
+            boolean allPassed = true;
+            log.info("Execution started: {} step(s), goal=\"{}\"", plan.steps.size(), plan.goal);
+            for (PlanStep step : plan.steps) {
+                checkCancelled();
+                step.status = "RUNNING";
+                log.info("Step {}/{} starting ({}): {}", step.stepNumber, plan.steps.size(), step.type, step.description);
+                emit(sink, step, "STEP_START", step.description, "start");
+                boolean passed = executeStep(plan, step, workspace, acceptedContext, sink);
+                step.status = passed ? "PASSED" : "FAILED";
+                if (passed) {
+                    log.info("Step {}/{} PASSED after {} attempt(s)", step.stepNumber, plan.steps.size(), step.attempts);
+                } else {
+                    log.warn("Step {}/{} FAILED after {} attempt(s): {}",
+                            step.stepNumber, plan.steps.size(), step.attempts, step.lastError);
+                }
+                emit(sink, step, "STEP_RESULT", "Step " + step.stepNumber + ": " + step.status, "result");
+                if (!passed) {
+                    allPassed = false;
+                    if (!AgentConfig.CONTINUE_ON_STEP_FAILURE) {
+                        log.warn("Stopping run: step {} failed and CONTINUE_ON_STEP_FAILURE is false", step.stepNumber);
+                        break;
+                    }
+                }
             }
+            log.info("Execution finished: overallSuccess={}", allPassed);
+            return allPassed;
+        } catch (Exception e) {
+            log.error("Execution aborted by an infrastructure error", e);
+            throw new IllegalStateException("Execution failed", e);
         }
-
-        if (failedCount > 0 && AgentConfig.CONTINUE_ON_STEP_FAILURE) {
-            ProgressEvent summary = ProgressEvent.of("STEP_PHASE",
-                    "Completed all " + steps.size() + " step(s) with " + failedCount +
-                            " failing test(s). Generated code for every step is still available.");
-            emit(onProgress, summary);
-        }
-        return failedCount == 0;
     }
 
-    private boolean executeStepWithRetries(PlanStep step, Path baseWorkDir, Consumer<ProgressEvent> onProgress) {
-        ProgressEvent startEvent = ProgressEvent.of("STEP_START",
-                "Step " + step.stepNumber + ": " + step.description);
-        startEvent.stepNumber = step.stepNumber;
-        startEvent.stepDescription = step.description;
-        startEvent.status = "RUNNING";
-        emit(onProgress, startEvent);
+    public boolean executeAll(List<PlanStep> steps, Consumer<ProgressEvent> sink) {
+        PlanResponse plan = new PlanResponse(); plan.goal = "Execute steps"; plan.steps = steps;
+        return executeAll(plan, sink);
+    }
+    public boolean executeAll(List<PlanStep> steps) { return executeAll(steps, null); }
 
-        for (int attempt = 1; attempt <= AgentConfig.MAX_RETRIES_PER_STEP; attempt++) {
+    private boolean executeStep(PlanResponse plan, PlanStep step, Path workspace,
+                                StringBuilder acceptedContext, Consumer<ProgressEvent> sink) {
+        String artifact = null;
+        String feedback = "";
+        int maxAttempts = Math.max(1, AgentConfig.MAX_RETRIES_PER_STEP);
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            checkCancelled();
             step.attempts = attempt;
+            log.info("Step {} attempt {}/{}", step.stepNumber, attempt, maxAttempts);
             try {
-                if (runOneAttempt(step, baseWorkDir, onProgress)) {
-                    return true;
+                if (attempt == 1) {
+                    artifact = generate(plan, step, acceptedContext.toString());
+                } else {
+                    log.info("Step {} attempt {}: revising from reviewer feedback: {}",
+                            step.stepNumber, attempt, truncate(feedback, 200));
+                    emit(sink, step, "STEP_RETRY", "Revising artifact from reviewer feedback", "retry");
+                    artifact = revise(plan, step, artifact, feedback, acceptedContext.toString());
                 }
-                String feedback = "generatedCode compiled/ran but test did not match expectedResult.\n" +
-                        "compileOutput: " + step.compileOutput + "\n" +
-                        "runOutput: " + step.runOutput + "\n" +
-                        "testRunOutput: " + step.testRunOutput + "\n" +
-                        "expectedResult: " + step.expectedResult;
-                step.lastError = feedback;
-                phaseEvent(onProgress, step, "test-mismatch",
-                        "Step " + step.stepNumber + ": test ran but output didn't match expected result");
-            } catch (Exception e) {
-                step.lastError = stackTraceToString(e);
-                phaseEvent(onProgress, step, "error",
-                        "Step " + step.stepNumber + ": " + firstLine(e.getMessage()));
-            }
+                if (artifact == null || artifact.isBlank()) throw new IllegalArgumentException("Empty generated artifact");
+                log.info("Step {} attempt {}: artifact generated ({} chars), validating", step.stepNumber, attempt, artifact.length());
+                emit(sink, step, "STEP_PHASE", "Generated artifact; validating requirements", "reviewing");
 
-            if (attempt < AgentConfig.MAX_RETRIES_PER_STEP) {
-                ProgressEvent retryEvent = ProgressEvent.of("STEP_RETRY",
-                        "Step " + step.stepNumber + ": asking the model to fix attempt " + attempt + "'s error\u2026");
-                retryEvent.stepNumber = step.stepNumber;
-                retryEvent.attempt = attempt;
-                retryEvent.status = "RUNNING";
-                emit(onProgress, retryEvent);
-
-                try {
-                    PlanStep fixed = plannerService.fixStep(step, step.lastError);
-                    step.generatedCode = fixed.generatedCode;
-                    step.className = fixed.className;
-                    step.testCode = fixed.testCode;
-                    step.testClassName = fixed.testClassName;
-                    if (fixed.expectedResult != null && !fixed.expectedResult.isBlank()) {
-                        step.expectedResult = fixed.expectedResult;
+                if ("PROJECT".equals(step.type)) {
+                    writeProjectFiles(step, workspace);
+                    log.info("Step {}: project files saved to workspace ({} file(s))", step.stepNumber, step.files.size());
+                    emit(sink, step, "STEP_PHASE", "Project files saved (build verification requires project dependencies)", "files-saved");
+                }
+                if ("JAVA".equals(step.type)) {
+                    JavaCodeRunner.CompileResult compiled = runner.compile(step.generatedCode, step.className, workspace);
+                    step.compileOutput = compiled.diagnostics;
+                    if (!compiled.success) {
+                        feedback = "Java compilation failed: " + compiled.diagnostics;
+                        step.lastError = feedback;
+                        log.warn("Step {} attempt {}: COMPILE FAILED: {}", step.stepNumber, attempt, truncate(compiled.diagnostics, 300));
+                        emit(sink, step, "STEP_PHASE", feedback, "compile-failed");
+                        continue;
                     }
-                    phaseEvent(onProgress, step, "fix-received",
-                            "Step " + step.stepNumber + ": got a fix from the model, retrying\u2026");
-                } catch (Exception fixEx) {
-                    step.lastError += "\n\nAdditionally failed to get a fix from the model: " + fixEx.getMessage();
-                    phaseEvent(onProgress, step, "fix-failed",
-                            "Step " + step.stepNumber + ": couldn't get a fix (" +
-                                    firstLine(fixEx.getMessage()) + "), retrying same code\u2026");
+                    log.info("Step {} attempt {}: compile PASSED (class {})", step.stepNumber, attempt, step.className);
+                    emit(sink, step, "STEP_PHASE", "Java compilation succeeded", "compiled");
                 }
+
+                checkCancelled();
+                ReviewVerdict verdict = reviewer.review(plan, step, artifact, acceptedContext.toString());
+                checkCancelled();
+                step.reviewReasoning = verdict.reasoning;
+                step.reviewPassed = verdict.matches;
+                if (!verdict.matches) {
+                    feedback = verdict.improvements == null || verdict.improvements.isBlank()
+                        ? verdict.reasoning : verdict.improvements;
+                    step.lastError = "Review rejected artifact: " + feedback;
+                    log.warn("Step {} attempt {}: REVIEW FAILED: {}", step.stepNumber, attempt, truncate(feedback, 300));
+                    emit(sink, step, "STEP_PHASE", step.lastError, "review-failed");
+                    continue;
+                }
+                step.lastError = null;
+                acceptedContext.append("\nStep ").append(step.stepNumber).append(" (approved): ")
+                    .append(artifact.length() > 10000 ? artifact.substring(0, 10000) : artifact);
+                log.info("Step {} attempt {}: REVIEW PASSED: {}", step.stepNumber, attempt, truncate(verdict.reasoning, 200));
+                emit(sink, step, "STEP_PHASE", "Reviewer approved: " + verdict.reasoning, "review-passed");
+                return true;
+            } catch (Exception e) {
+                checkCancelled();
+                feedback = e.getMessage() == null ? e.toString() : e.getMessage();
+                step.lastError = feedback;
+                log.warn("Step {} attempt {}: ERROR: {}", step.stepNumber, attempt, feedback);
+                emit(sink, step, "STEP_PHASE", "Step error: " + feedback, "error");
             }
         }
         return false;
     }
 
-    /** One compile+run+test pass. Returns true only if test output matches expectedResult. Throws on infra errors. */
-    private boolean runOneAttempt(PlanStep step, Path baseWorkDir, Consumer<ProgressEvent> onProgress) throws Exception {
-        Path stepDir = baseWorkDir.resolve("step-" + step.stepNumber + "-attempt-" + step.attempts);
+    private void checkCancelled() { if (Thread.currentThread().isInterrupted()) throw new IllegalStateException("Run cancelled"); }
 
-        // 1. compile generatedCode
-        phaseEvent(onProgress, step, "compiling", "Step " + step.stepNumber + ": compiling generated code\u2026");
-        Path codeDir = stepDir.resolve("code");
-        JavaCodeRunner.CompileResult codeCompile = runner.compile(step.generatedCode, step.className, codeDir);
-        step.compileOutput = codeCompile.diagnostics;
-        if (!codeCompile.success) {
-            throw new RuntimeException("Compilation failed for step " + step.stepNumber + ":\n" + codeCompile.diagnostics);
-        }
-
-// 2. optionally run generatedCode's main() — NOT required, and never a hard failure.
-//     A helper class only needs to *compile* so the test can call it. Many valid
-//     generated classes have no main() at all (e.g. a PrimeChecker utility class).
-        if (AgentConfig.RUN_GENERATED_CODE_STANDALONE) {
-            phaseEvent(onProgress, step, "running", "Step " + step.stepNumber + ": running generated code\u2026");
-            JavaCodeRunner.RunResult codeRun = runner.run(codeDir, step.className);
-            step.runOutput = (codeRun.stdout == null ? "" : codeRun.stdout) +
-                    (codeRun.stderr == null ? "" : codeRun.stderr);
-            if (codeRun.timedOut) {
-                throw new RuntimeException("generatedCode for step " + step.stepNumber + " timed out:\n" + step.runOutput);
+    private String generate(PlanResponse plan, PlanStep step, String context) {
+        return switch (step.type) {
+            case "JAVA" -> {
+                PlanStep produced = planner.generateImplementation(plan, step, context);
+                applyJava(step, produced);
+                yield step.generatedCode;
             }
-            if (!codeRun.success) {
-                throw new RuntimeException("generatedCode for step " + step.stepNumber +
-                        " exited with code " + codeRun.exitCode + ":\n" + step.runOutput);
+            case "PROJECT" -> {
+                applyProject(step, planner.generateProject(plan, step, context));
+                yield step.generatedCode;
             }
-        } else {
-            step.runOutput = "(skipped standalone run; only compilation + test are enforced)";
-        }
-
-        // 3. compile testCode (copy generatedCode's .class files alongside so the test can reference it)
-        phaseEvent(onProgress, step, "compiling-test", "Step " + step.stepNumber + ": compiling test\u2026");
-        Path testDir = stepDir.resolve("test");
-        Files.createDirectories(testDir);
-        copyClassFiles(codeDir, testDir);
-        JavaCodeRunner.CompileResult testCompile = runner.compile(step.testCode, step.testClassName, testDir);
-        step.testRunOutput = testCompile.diagnostics;
-        if (!testCompile.success) {
-            throw new RuntimeException("Test compilation failed for step " + step.stepNumber + ":\n" + testCompile.diagnostics);
-        }
-
-// 4. run testCode
-        phaseEvent(onProgress, step, "testing", "Step " + step.stepNumber + ": running test\u2026");
-        JavaCodeRunner.RunResult testRun = runner.run(testDir, step.testClassName);
-        String testOutput = (testRun.stdout == null ? "" : testRun.stdout) +
-                (testRun.stderr == null ? "" : testRun.stderr);
-        step.testRunOutput = testOutput;
-
-        return strictPassCheck(step, testRun, testOutput, onProgress);
-    }
-
-    private void phaseEvent(Consumer<ProgressEvent> onProgress, PlanStep step, String phase, String message) {
-        ProgressEvent e = ProgressEvent.of("STEP_PHASE", message);
-        e.stepNumber = step.stepNumber;
-        e.phase = phase;
-        e.attempt = step.attempts;
-        e.status = "RUNNING";
-        emit(onProgress, e);
-    }
-
-    private void emit(Consumer<ProgressEvent> onProgress, ProgressEvent event) {
-        if (onProgress != null) {
-            try {
-                onProgress.accept(event);
-            } catch (Exception ignored) {
-                // a broken/closed client stream shouldn't abort the actual pipeline run
+            case "DIRECT" -> {
+                step.runOutput = planner.generateDirect(plan, step, context);
+                yield step.runOutput;
             }
-        }
-    }
-
-    private String firstLine(String s) {
-        if (s == null) return "unknown error";
-        int nl = s.indexOf('\n');
-        return nl > 0 ? s.substring(0, nl) : s;
-    }
-
-    private void copyClassFiles(Path from, Path to) throws IOException {
-        if (!Files.exists(from)) return;
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(from, "*.class")) {
-            for (Path p : stream) {
-                Files.copy(p, to.resolve(p.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+            case "COMMAND" -> {
+                step.runOutput = commands.toolVersion(selectTool(step.description));
+                yield step.runOutput;
             }
+            default -> throw new IllegalArgumentException("Unsupported type: " + step.type);
+        };
+    }
+
+    private String revise(PlanResponse plan, PlanStep step, String old, String feedback, String context) {
+        if ("COMMAND".equals(step.type)) return generate(plan, step, context);
+        String revised = planner.revise(plan, step, old, feedback, context);
+        if ("PROJECT".equals(step.type)) {
+            applyProject(step, planner.parseImplementation(revised));
+            return step.generatedCode;
+        }
+        if ("JAVA".equals(step.type)) {
+            applyJava(step, planner.parseImplementation(revised));
+            return step.generatedCode;
+        }
+        step.runOutput = revised;
+        return revised;
+    }
+
+    private void applyProject(PlanStep step, PlanStep produced) {
+        if (produced == null || produced.files == null || produced.files.isEmpty())
+            throw new IllegalArgumentException("Model returned no project files");
+        step.files = new java.util.LinkedHashMap<>(produced.files);
+        StringBuilder artifact = new StringBuilder();
+        produced.files.forEach((name, content) -> artifact.append("\n### ").append(name)
+            .append("\n```\n").append(content).append("\n```\n"));
+        step.generatedCode = artifact.toString();
+    }
+
+    private void writeProjectFiles(PlanStep step, Path workspace) throws java.io.IOException {
+        Path root = workspace.resolve("project").toAbsolutePath().normalize();
+        Files.createDirectories(root);
+        for (var entry : step.files.entrySet()) {
+            String relative = entry.getKey().replace('\\', '/');
+            if (relative.startsWith("/") || relative.contains(":") || relative.contains(".."))
+                throw new IllegalArgumentException("Unsafe project path: " + relative);
+            Path target = root.resolve(relative).normalize();
+            if (!target.startsWith(root)) throw new IllegalArgumentException("Unsafe project path");
+            if (entry.getValue() == null) throw new IllegalArgumentException("Missing file content: " + relative);
+            Files.createDirectories(target.getParent());
+            Files.writeString(target, entry.getValue());
         }
     }
 
-    private String stackTraceToString(Exception e) {
-        StringWriter sw = new StringWriter();
-        e.printStackTrace(new PrintWriter(sw));
-        return sw.toString();
+    private void applyJava(PlanStep step, PlanStep produced) {
+        if (produced == null || produced.className == null ||
+            !produced.className.matches("[A-Za-z_$][A-Za-z0-9_$]*") ||
+            produced.generatedCode == null || produced.generatedCode.isBlank())
+            throw new IllegalArgumentException("Ollama did not return valid Java class/source");
+        step.className = produced.className;
+        step.generatedCode = produced.generatedCode;
     }
 
-    /**
-     * Authoritative pass decision for a step. Uses ONLY real, observable facts from
-     * the test subprocess — not a substring the model could print unconditionally.
-     * All four rules must hold:
-     *   1. test subprocess did not time out
-     *   2. test subprocess exited with code 0 (this is what catches every uncaught
-     *      exception / StackOverflowError / assertion failure in the test's main)
-     *   3. test stdout does not contain RESULT:FAIL
-     *   4. test stdout contains the expected pass marker (default "RESULT:PASS")
-     */
-    private boolean strictPassCheck(PlanStep step,
-                                    JavaCodeRunner.RunResult testRun,
-                                    String testOutput,
-                                    Consumer<ProgressEvent> onProgress) {
+    private String selectTool(String description) {
+        String s = description.toLowerCase();
+        if (s.contains("javac")) return "javac";
+        if (s.contains("node")) return "node";
+        if (s.contains("npm")) return "npm";
+        if (s.contains("ollama")) return "ollama";
+        if (s.contains("java") || s.contains("jdk")) return "java";
+        throw new IllegalArgumentException("Unrecognized tool version check: " + description);
+    }
 
-        if (testRun.timedOut) {
-            phaseEvent(onProgress, step, "test-timeout",
-                    "Step " + step.stepNumber + ": test timed out \u2717");
-            return false;
-        }
-        if (testRun.exitCode != 0) {
-            phaseEvent(onProgress, step, "test-exit-nonzero",
-                    "Step " + step.stepNumber + ": test exited with code " + testRun.exitCode + " \u2717");
-            return false;
-        }
-        if (testOutput.contains("RESULT:FAIL")) {
-            phaseEvent(onProgress, step, "test-failed",
-                    "Step " + step.stepNumber + ": test printed RESULT:FAIL \u2717");
-            return false;
-        }
-        String expected = step.expectedResult == null ? "RESULT:PASS" : step.expectedResult;
-        if (!testOutput.contains(expected)) {
-            phaseEvent(onProgress, step, "test-no-marker",
-                    "Step " + step.stepNumber + ": test did not print " + expected + " \u2717");
-            return false;
-        }
-        phaseEvent(onProgress, step, "test-passed",
-                "Step " + step.stepNumber + ": test passed \u2713 (exit 0 + " + expected + ")");
-        return true;
+    private void emit(Consumer<ProgressEvent> sink, PlanStep step, String type, String message, String phase) {
+        if (sink == null) return;
+        ProgressEvent e = ProgressEvent.of(type, message);
+        e.stepNumber = step.stepNumber; e.stepDescription = step.description;
+        e.phase = phase; e.attempt = step.attempts; e.status = step.status;
+        if ("STEP_RESULT".equals(type)) e.step = step;
+        try { sink.accept(e); } catch (Exception ignored) { }
+    }
+
+    private String truncate(String s, int length) {
+        if (s == null) return "";
+        return s.length() <= length ? s : s.substring(0, length) + "...";
     }
 }

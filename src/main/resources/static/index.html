@@ -1,0 +1,2137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Planner Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #15181D;
+      --panel: #1B1F25;
+      --panel-raised: #20252C;
+      --border: #2A2F37;
+      --text: #E8EAED;
+      --muted: #7C8591;
+      --faint: #4B525C;
+      --accent: #6C9BD1;
+      --pass: #4FA380;
+      --pass-bg: rgba(79, 163, 128, 0.12);
+      --fail: #C9594F;
+      --fail-bg: rgba(201, 89, 79, 0.12);
+      --warn: #D1A75C;
+      --warn-bg: rgba(209, 167, 92, 0.12);
+      --pending: #7C8591;
+      --running: #D1A75C;
+      --running-bg: rgba(209, 167, 92, 0.12);
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      display: flex;
+      flex-direction: column;
+    }
+    code, pre, .mono { font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace; }
+
+    /* ---- top bar ---- */
+    header {
+      position: sticky;
+      top: env(safe-area-inset-top, 0px);
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 20px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .brand .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: inline-block;
+    }
+    .brand b { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+    .brand span { color: var(--muted); font-size: 12px; }
+
+    #promptForm {
+      flex: 1;
+      display: flex;
+      gap: 8px;
+      min-width: 0;
+    }
+    #promptInput {
+      flex: 1;
+      min-width: 0;
+      background: var(--panel-raised);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 9px 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    #promptInput:focus { border-color: var(--accent); }
+    #promptInput::placeholder { color: var(--faint); }
+
+    button {
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary {
+      background: var(--accent);
+      color: #10151C;
+      border-color: var(--accent);
+      padding: 9px 16px;
+      font-weight: 600;
+    }
+    .btn-primary:not(:disabled):hover { background: #82ACDC; }
+    .btn-ghost {
+      background: transparent;
+      color: var(--muted);
+      padding: 9px 12px;
+    }
+    .btn-ghost:not(:disabled):hover { color: var(--text); border-color: var(--faint); }
+
+    select#modeSelect {
+      background: var(--panel-raised);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 6px;
+      padding: 9px 10px;
+      font-family: inherit;
+      font-size: 12px;
+      outline: none;
+      flex-shrink: 0;
+    }
+
+    /* ---- layout ---- */
+    main {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+    }
+
+    /* left rail */
+    #rail {
+      width: 320px;
+      flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      background: var(--panel);
+    }
+    @media (max-width: 760px) {
+      #rail { width: 100%; }
+      main { flex-direction: column; }
+      main.has-selection #rail { display: none; }
+      main.has-selection #detail { display: flex; }
+      #backBtn { display: inline-flex !important; }
+    }
+
+    .rail-section-label {
+      padding: 14px 16px 6px;
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+    .rail-goal {
+      padding: 0 16px 12px;
+      font-size: 13px;
+      color: var(--text);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 14px;
+      margin-bottom: 4px;
+    }
+    /* NEW: per-run summary bar above the goal */
+    .rail-summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11.5px;
+      color: var(--muted);
+      background: var(--panel-raised);
+    }
+    .rail-summary .count-pass { color: var(--pass); font-weight: 600; }
+    .rail-summary .count-fail { color: var(--fail); font-weight: 600; }
+    .rail-summary .count-pending { color: var(--muted); }
+    .rail-summary .spacer { flex: 1; }
+    .rail-summary .phase-label { color: var(--running); }
+
+    .step-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 11px 16px;
+      cursor: pointer;
+      border-left: 2px solid transparent;
+      transition: background 0.1s;
+    }
+    .step-item:hover { background: var(--panel-raised); }
+    .step-item.active { background: var(--panel-raised); border-left-color: var(--accent); }
+
+    .step-num {
+      flex-shrink: 0;
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 500;
+      margin-top: 1px;
+      background: var(--panel-raised);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .step-item[data-status="PASSED"] .step-num { background: var(--pass-bg); color: var(--pass); border-color: transparent; }
+    .step-item[data-status="FAILED"] .step-num { background: var(--fail-bg); color: var(--fail); border-color: transparent; }
+    .step-item[data-status="RUNNING"] .step-num { background: var(--running-bg); color: var(--running); border-color: transparent; }
+    /* NEW: skipped state (only used when continueOnFailure=false bails early) */
+    .step-item[data-status="SKIPPED"] .step-num { background: var(--panel-raised); color: var(--faint); border-color: var(--border); }
+    .step-item[data-status="SKIPPED"] .step-desc { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
+
+    .step-body { min-width: 0; flex: 1; }
+    .step-desc { font-size: 13px; color: var(--text); overflow-wrap: break-word; }
+    .step-meta { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: 'JetBrains Mono', monospace; }
+    .step-meta .status-pass { color: var(--pass); }
+    .step-meta .status-fail { color: var(--fail); }
+    .step-meta .status-running { color: var(--running); }
+    .step-meta .status-skipped { color: var(--faint); }
+
+    /* detail pane */
+    #detail {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #backBtn {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 16px;
+      color: var(--muted);
+      border: none;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 0;
+      text-align: left;
+      font-size: 12px;
+    }
+
+    #emptyState {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: var(--faint);
+      text-align: center;
+      padding: 40px;
+    }
+    #emptyState .glyph { font-size: 28px; opacity: 0.5; }
+    #emptyState p { max-width: 320px; font-size: 13px; color: var(--muted); margin: 0; }
+
+    #stepDetail { display: none; flex: 1; min-height: 0; flex-direction: column; }
+
+    .detail-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .detail-header .title-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+    .detail-header h2 { font-size: 15px; font-weight: 600; margin: 0; }
+    .badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: 100px;
+    }
+    .badge.PASSED { background: var(--pass-bg); color: var(--pass); }
+    .badge.FAILED { background: var(--fail-bg); color: var(--fail); }
+    .badge.RUNNING { background: var(--running-bg); color: var(--running); }
+    .badge.PENDING { background: var(--panel-raised); color: var(--muted); }
+    .badge.SKIPPED { background: var(--panel-raised); color: var(--faint); }
+    .detail-header .attempts { font-size: 12px; color: var(--muted); }
+
+    .tabs {
+      display: flex;
+      gap: 2px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      overflow-x: auto;
+    }
+    .tab {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      padding: 10px 14px;
+      font-size: 12.5px;
+      border-radius: 0;
+      white-space: nowrap;
+    }
+    .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+    .tab:hover:not(.active) { color: var(--text); }
+
+    .tab-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 18px 20px 40px;
+    }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+    .tab-pane[data-pane="test"] pre.code-block {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      overflow-x: hidden;
+      width: 100%;
+      max-height: none;
+    }
+    .tab-pane[data-pane="test"] .expected-line {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    #directAnswer {
+      padding: 26px 32px;
+      overflow: auto;
+      flex: 1;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 14px;
+      line-height: 1.75;
+      max-width: 100%;
+    }
+
+    .tab-pane[data-pane="test"] pre.code-block {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      max-width: 100%;
+      overflow-x: hidden;
+    }
+    pre.code-block {
+      background: var(--panel-raised);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      font-size: 12.5px;
+      line-height: 1.6;
+      overflow-x: auto;
+      white-space: pre;
+      color: #D7DCE2;
+      margin: 0;
+    }
+    .output-block {
+      background: #0F1216;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      font-size: 12.5px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--muted);
+      max-height: 340px;
+      overflow-y: auto;
+    }
+    .output-block.fail-output { color: #E1948D; border-color: rgba(201,89,79,0.35); }
+    .output-block.empty::before { content: "No output."; color: var(--faint); font-style: italic; font-family: 'Inter', sans-serif; }
+    /* NEW: info-style blocks (e.g. "standalone run skipped") */
+    .output-block.info-output { color: var(--muted); font-style: italic; }
+
+    .field-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin: 0 0 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .copy-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 10.5px;
+      padding: 3px 8px;
+      border-radius: 4px;
+    }
+    .copy-btn:hover { color: var(--text); border-color: var(--faint); }
+
+    .expected-line {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      color: var(--text);
+      background: var(--panel-raised);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin-bottom: 18px;
+    }
+    .expected-line span { color: var(--muted); }
+
+    /* ---- live activity log ---- */
+    #activityLog {
+      flex-shrink: 0;
+      border-top: 1px solid var(--border);
+      background: var(--panel);
+      display: none;
+    }
+    #activityLog.visible { display: block; }
+    #activityToggle {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: none;
+      border: none;
+      border-radius: 0;
+      color: var(--muted);
+      padding: 7px 20px;
+      font-size: 11px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    #activityToggle:hover { color: var(--text); }
+    #activityToggleCount { color: var(--faint); }
+    #activityFeed {
+      display: none;
+      max-height: 180px;
+      overflow-y: auto;
+      padding: 2px 20px 10px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11.5px;
+      line-height: 1.7;
+    }
+    #activityLog.expanded #activityFeed { display: block; }
+    .activity-line {
+      color: var(--muted);
+      white-space: pre-wrap;
+      word-break: break-word;
+      display: flex;
+      gap: 8px;
+    }
+    .activity-line .dot { flex-shrink: 0; margin-top: 6px; width: 5px; height: 5px; border-radius: 50%; background: var(--faint); }
+    .activity-line.pass .dot { background: var(--pass); }
+    .activity-line.fail .dot { background: var(--fail); }
+    .activity-line.warn .dot { background: var(--warn); }
+    .activity-line.active .dot { background: var(--running); animation: pulse 1s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .activity-line.pass { color: var(--pass); }
+    .activity-line.fail { color: var(--fail); }
+    .activity-line.warn { color: var(--warn); }
+
+    /* status bar */
+    #statusBar {
+      flex-shrink: 0;
+      border-top: 1px solid var(--border);
+      background: var(--panel);
+      padding: 9px 20px;
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 38px;
+    }
+    #statusBar.success { color: var(--pass); }
+    #statusBar.partial { color: var(--warn); }
+    #statusBar.error { color: var(--fail); }
+    .spinner {
+      width: 11px; height: 11px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* settings popover */
+    #settingsBtn { flex-shrink: 0; }
+    #settingsPanel {
+      position: fixed;
+      top: 56px;
+      right: 20px;
+      background: var(--panel-raised);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+      width: 260px;
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 20;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+    #settingsPanel.open { display: flex; }
+    #settingsPanel label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px; }
+    #settingsPanel input {
+      width: 100%;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      padding: 7px 9px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      outline: none;
+    }
+    #settingsPanel input:focus { border-color: var(--accent); }
+
+    /* ---- models panel ---- */
+    .active-model-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+      background: var(--panel-raised);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11.5px;
+      color: var(--muted);
+      cursor: pointer;
+      max-width: 190px;
+    }
+    .active-model-chip:hover { border-color: var(--faint); color: var(--text); }
+    .active-model-chip .chip-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--faint);
+      flex-shrink: 0;
+    }
+    .active-model-chip.has-model .chip-dot { background: var(--pass); }
+    .active-model-chip .chip-name {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #modelsOverlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 30;
+      display: none;
+    }
+    #modelsOverlay.open { display: block; }
+
+    #modelsPanel {
+      position: fixed;
+      top: 0; right: 0;
+      bottom: 0;
+      width: 420px;
+      max-width: 100%;
+      background: var(--panel);
+      border-left: 1px solid var(--border);
+      z-index: 31;
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.2s ease;
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    #modelsPanel.open { transform: translateX(0); }
+
+    .models-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .models-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
+    .models-header .sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .icon-btn {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1;
+      padding: 4px 6px;
+      border-radius: 5px;
+    }
+    .icon-btn:hover { color: var(--text); background: var(--panel-raised); }
+
+    .models-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 12px 20px;
+    }
+    .models-list-status {
+      padding: 30px 16px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12.5px;
+    }
+    .model-row {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+      background: var(--panel-raised);
+    }
+    .model-row.is-active { border-color: var(--accent); }
+    .model-row-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .model-row-name {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      overflow-wrap: anywhere;
+    }
+    .model-pills { display: flex; gap: 6px; flex-shrink: 0; }
+    .pill {
+      font-size: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      padding: 2px 7px;
+      border-radius: 100px;
+      white-space: nowrap;
+    }
+    .pill.loaded { background: var(--pass-bg); color: var(--pass); }
+    .pill.active { background: rgba(108,155,209,0.15); color: var(--accent); }
+
+    .model-row-meta {
+      display: flex;
+      gap: 14px;
+      font-size: 11px;
+      color: var(--muted);
+      font-family: 'JetBrains Mono', monospace;
+      margin-bottom: 10px;
+    }
+    .model-row-meta span b { color: var(--text); font-weight: 500; }
+
+    .model-row-actions { display: flex; gap: 8px; }
+    .model-row-actions button {
+      flex: 1;
+      padding: 7px 10px;
+      font-size: 11.5px;
+    }
+    .btn-select {
+      background: var(--accent);
+      color: #10151C;
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .btn-select:not(:disabled):hover { background: #82ACDC; }
+    .btn-select.is-active { background: var(--panel); color: var(--muted); border-color: var(--border); cursor: default; }
+    .btn-unload {
+      background: transparent;
+      color: var(--muted);
+    }
+    .btn-unload:not(:disabled):hover { color: var(--fail); border-color: var(--fail); }
+
+    .models-footer {
+      border-top: 1px solid var(--border);
+      padding: 10px 18px;
+      flex-shrink: 0;
+    }
+    .models-footer button { width: 100%; padding: 8px; font-size: 12px; }
+
+    ::-webkit-scrollbar { width: 9px; height: 9px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--faint); }
+
+    @media (prefers-reduced-motion: reduce) {
+      .spinner { animation: none; border-top-color: var(--border); }
+    }
+    #promptInput { resize: horizontal; max-width: 100%; }
+    #stopBtn:not(:disabled) { border-color: var(--fail); color: #f19a93; }
+    #rail { width: 320px; min-width: 180px; max-width: 70vw; border-right: 0; }
+    .resize-handle { width: 6px; cursor: col-resize; flex: 0 0 6px; background: var(--border); }
+    .resize-horizontal { height: 6px; flex-shrink: 0; cursor: row-resize; background: var(--border); }
+    #activityLog.visible { height: 230px; min-height: 60px; overflow: hidden; display:flex; flex-direction:column; }
+    #activityLog.expanded #activityFeed { display:block; flex:1; max-height:none; overflow-y:auto; }
+    #activityLog:not(.visible) + #statusBar { display:flex; }
+    #activityResize { display:none; }
+    body:has(#activityLog.visible) #activityResize { display:block; }
+    .model-sort { padding: 10px 14px; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .model-sort select { background:var(--panel-raised); border:1px solid var(--border); color:var(--text); padding:6px; border-radius:5px; }
+    @media (max-width:760px) { .resize-handle,.resize-horizontal {display:none !important;} #rail {max-width:none;width:100% !important;} #promptInput {resize:none;} }
+
+    /* ---- agent/chat mode switch ---- */
+    .app-mode-switch {
+      display: flex;
+      gap: 2px;
+      background: var(--panel-raised);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 2px;
+      flex-shrink: 0;
+    }
+    .app-mode-btn {
+      background: none;
+      border: none;
+      border-radius: 5px;
+      color: var(--muted);
+      padding: 6px 13px;
+      font-size: 12.5px;
+      font-weight: 500;
+      font-family: 'Inter', sans-serif;
+    }
+    .app-mode-btn.active { background: var(--accent); color: #10151C; }
+    .app-mode-btn:not(.active):hover { color: var(--text); }
+
+    /* ---- chat layout ---- */
+    #chatLayout {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    #chatMessages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 0 40px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    #chatEmptyState {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: var(--faint);
+      text-align: center;
+      padding: 40px;
+    }
+    #chatEmptyState .glyph { font-size: 28px; opacity: 0.5; }
+    #chatEmptyState p { max-width: 420px; font-size: 13px; color: var(--muted); margin: 0; }
+
+    .chat-turn {
+      max-width: 760px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 0 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .chat-turn .chat-role {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+    .chat-turn.user .chat-role { color: var(--accent); }
+    .chat-bubble {
+      background: var(--panel-raised);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 14px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text);
+    }
+    .chat-turn.user .chat-bubble {
+      background: rgba(108,155,209,0.08);
+      border-color: rgba(108,155,209,0.25);
+    }
+    .chat-turn.assistant .chat-bubble { background: var(--panel-raised); }
+    .chat-bubble.streaming::after {
+      content: '\u258A';
+      display: inline-block;
+      margin-left: 2px;
+      color: var(--accent);
+      animation: pulse 0.9s ease-in-out infinite;
+    }
+    .chat-bubble p { margin: 0 0 10px; }
+    .chat-bubble p:last-child { margin-bottom: 0; }
+
+    .chat-code-block {
+      position: relative;
+      background: #0F1216;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin: 10px 0;
+      overflow: hidden;
+    }
+    .chat-code-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 12px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10.5px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .chat-code-header .copy-btn { text-transform: none; letter-spacing: 0; }
+    .chat-code-block pre {
+      margin: 0;
+      padding: 14px 16px;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      line-height: 1.6;
+      color: #D7DCE2;
+      white-space: pre;
+    }
+
+    .chat-error-bubble {
+      border-color: rgba(201,89,79,0.35) !important;
+      color: var(--fail) !important;
+    }
+
+    #chatForm { flex: 1; display: flex; gap: 8px; min-width: 0; }
+    #chatInput {
+      flex: 1;
+      min-width: 0;
+      background: var(--panel-raised);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 9px 12px;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    #chatInput:focus { border-color: var(--accent); }
+    #chatInput::placeholder { color: var(--faint); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="brand"><span class="dot"></span><b>Planner Agent</b><span>local Ollama pipeline</span></div>
+  <div class="app-mode-switch" role="tablist" aria-label="Application mode">
+    <button type="button" class="app-mode-btn active" id="agentModeBtn" role="tab" aria-selected="true">Agent</button>
+    <button type="button" class="app-mode-btn" id="chatModeBtn" role="tab" aria-selected="false">Chat</button>
+  </div>
+  <form id="promptForm">
+    <input id="promptInput" type="text" placeholder="e.g. write a function that reverses a string" autocomplete="off">
+    <select id="modeSelect" title="Plan only, or plan and execute">
+      <option value="execute">Plan &amp; execute</option>
+      <option value="plan-only">Plan only</option>
+    </select>
+    <button type="submit" class="btn-primary" id="runBtn">Run</button><button type="button" class="btn-ghost" id="stopBtn" disabled>Stop</button>
+  </form>
+  <form id="chatForm" style="display:none;">
+    <input id="chatInput" type="text" placeholder="Ask anything&hellip;" autocomplete="off">
+    <button type="submit" class="btn-primary" id="chatSendBtn">Send</button><button type="button" class="btn-ghost" id="chatStopBtn" disabled>Stop</button>
+  </form>
+  <button type="button" class="active-model-chip" id="modelsBtn" title="Manage local Ollama models">
+    <span class="chip-dot" id="chipDot"></span>
+    <span class="chip-name" id="chipName">No model selected</span>
+  </button>
+  <button type="button" class="btn-ghost" id="settingsBtn">Settings</button>
+</header>
+
+<div id="modelsOverlay"></div>
+<aside id="modelsPanel">
+  <div class="models-header">
+    <div>
+      <h3>Local models</h3>
+      <div class="sub">from <code class="mono">ollama list</code></div>
+    </div>
+    <button type="button" class="icon-btn" id="closeModelsBtn" aria-label="Close">&times;</button>
+  </div>
+  <div class="model-sort"><label for="modelSort">Sort models</label><select id="modelSort"><option value="name-asc">Name A–Z</option><option value="name-desc">Name Z–A</option><option value="size-asc">Size small → large</option><option value="size-desc">Size large → small</option></select></div><div class="models-list" id="modelsList">
+  <div class="models-list-status">Loading models&hellip;</div>
+</div>
+  <div class="models-footer">
+    <button type="button" class="btn-ghost" id="refreshModelsBtn" style="border:1px solid var(--border);">Refresh list</button>
+  </div>
+</aside>
+
+<div id="settingsPanel">
+  <div>
+    <label for="baseUrlInput">API base URL</label>
+    <input id="baseUrlInput" type="text" value="http://localhost:8080" spellcheck="false">
+  </div>
+  <div style="font-size:11px; color:var(--faint); line-height:1.5;">
+    Calls <code class="mono">POST {base}/api/plan/execute</code> or <code class="mono">/api/plan/plan-only</code>.
+    Saved in this browser only.
+  </div>
+</div>
+
+<main id="mainLayout">
+  <nav id="rail">
+    <div id="railEmpty" class="rail-section-label" style="padding-top:20px;">No plan yet &mdash; run a prompt above</div>
+    <div id="railGoalWrap" style="display:none;">
+      <!-- NEW: per-run summary bar -->
+      <div class="rail-summary" id="railSummary" style="display:none;">
+        <span id="railSummaryPass" class="count-pass">0 passed</span>
+        <span id="railSummaryFail" class="count-fail">0 failed</span>
+        <span class="spacer"></span>
+        <span id="railSummaryPhase" class="phase-label"></span>
+      </div>
+      <div class="rail-goal" id="railGoal"></div>
+    </div>
+    <div id="stepList"></div>
+  </nav><div id="railResize" class="resize-handle" role="separator" aria-label="Resize sidebar" tabindex="0"></div>
+
+  <section id="detail">
+    <button id="backBtn" type="button">&larr; All steps</button>
+    <div id="emptyState">
+      <div class="glyph">&#9679;&#9675;&#9675;</div>
+      <p>Describe a coding task above. The agent plans it into steps, then generates, compiles, and tests each one. Steps that can't be made to pass are reported individually &mdash; the rest still run.</p>
+    </div>
+
+    <article id="directAnswer" style="display:none;" aria-label="Generated answer"></article>
+    <div id="stepDetail">
+      <div class="detail-header">
+        <div class="title-row">
+          <h2 id="detailTitle">Step</h2>
+          <span class="badge" id="detailBadge">PENDING</span>
+        </div>
+        <div class="attempts" id="detailMeta"></div>
+      </div>
+      <div class="tabs">
+        <button class="tab active" data-tab="code">Code</button>
+        <button class="tab" data-tab="runOutput">Run output</button>
+
+
+        <button class="tab" data-tab="error">Last error</button>
+        <button class="tab" data-tab="review">AI review</button>
+      </div>
+      <div class="tab-content">
+        <div class="tab-pane active" data-pane="code">
+          <p class="field-label">generatedCode<button class="copy-btn" data-copy="code">Copy</button></p>
+          <select id="filePicker" aria-label="Generated project file" style="display:none;margin:0 0 10px;background:var(--panel-raised);color:var(--text);border:1px solid var(--border);padding:7px;"></select><pre class="code-block" id="paneCode"></pre>
+        </div>
+        <div class="tab-pane" data-pane="runOutput">
+          <p class="field-label">stdout / stderr</p>
+          <div class="output-block" id="paneRunOutput"></div>
+        </div>
+        <div class="tab-pane" data-pane="test">
+          <p class="field-label">testCode<button class="copy-btn" data-copy="test">Copy</button></p>
+          <div class="expected-line"><span>expects: </span><span id="paneExpected"></span></div>
+          <pre class="code-block" id="paneTest"></pre>
+        </div>
+        <div class="tab-pane" data-pane="testOutput">
+          <p class="field-label">test stdout / stderr</p>
+          <div class="output-block" id="paneTestOutput"></div>
+        </div>
+        <div class="tab-pane" data-pane="review">
+          <p class="field-label">AI evaluation against step acceptance criteria</p>
+          <div class="output-block" id="paneReview"></div>
+        </div>
+        <div class="tab-pane" data-pane="error">
+          <p class="field-label">lastError</p>
+          <div class="output-block fail-output" id="paneError"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<main id="chatLayout" style="display:none;">
+  <div id="chatMessages">
+    <div id="chatEmptyState">
+      <div class="glyph">&#9679;&#9675;&#9675;</div>
+      <p>Chat mode talks to the model directly &mdash; no planning, no steps. Code in the reply is shown in its own copyable block; everything else stays as plain text.</p>
+    </div>
+  </div>
+</main>
+
+<div id="activityResize" class="resize-horizontal" role="separator" aria-label="Resize activity log" tabindex="0"></div><div id="activityLog">
+  <button type="button" id="activityToggle">
+    <span id="activityToggleLabel">Activity</span>
+    <span id="activityToggleCount"></span>
+  </button>
+  <div id="activityFeed"></div>
+</div>
+
+<div id="statusBar">Ready.</div>
+
+<script>
+  (function () {
+    'use strict';
+
+    var state = {
+      plan: null,
+      selectedStep: null,
+      loading: false,
+      models: [],
+      activeModel: null,
+      modelsLoading: false,
+      initialModelsFetchDone: false,
+      // NEW: rolling per-run tallies, kept in sync with every STEP_RESULT / DONE event
+      stream: null, runId: null, abortController: null,
+      runSummary: { passed: 0, failed: 0, pending: 0, total: 0, runningStep: null, finished: false },
+      // chat mode state
+      appMode: 'agent', // 'agent' | 'chat'
+      chatHistory: [],  // [{role,content}, ...] oldest first
+      chatLoading: false,
+      chatStream: null,
+      chatRunId: null
+    };
+
+    var $ = function (sel) { return document.querySelector(sel); };
+    var el = {
+      form: $('#promptForm'),
+      input: $('#promptInput'),
+      mode: $('#modeSelect'),
+      runBtn: $('#runBtn'),
+      stopBtn: $('#stopBtn'),
+      modelSort: $('#modelSort'),
+      filePicker: $('#filePicker'),
+      settingsBtn: $('#settingsBtn'),
+      settingsPanel: $('#settingsPanel'),
+      baseUrlInput: $('#baseUrlInput'),
+      modelsBtn: $('#modelsBtn'),
+      chipDot: $('#chipDot'),
+      chipName: $('#chipName'),
+      modelsOverlay: $('#modelsOverlay'),
+      modelsPanel: $('#modelsPanel'),
+      closeModelsBtn: $('#closeModelsBtn'),
+      refreshModelsBtn: $('#refreshModelsBtn'),
+      modelsList: $('#modelsList'),
+      activityLog: $('#activityLog'),
+      activityToggle: $('#activityToggle'),
+      activityToggleLabel: $('#activityToggleLabel'),
+      activityToggleCount: $('#activityToggleCount'),
+      activityFeed: $('#activityFeed'),
+      rail: $('#rail'),
+      railEmpty: $('#railEmpty'),
+      railGoalWrap: $('#railGoalWrap'),
+      railGoal: $('#railGoal'),
+      // NEW
+      railSummary: $('#railSummary'),
+      railSummaryPass: $('#railSummaryPass'),
+      railSummaryFail: $('#railSummaryFail'),
+      railSummaryPhase: $('#railSummaryPhase'),
+      stepList: $('#stepList'),
+      main: $('#mainLayout'),
+      backBtn: $('#backBtn'),
+      emptyState: $('#emptyState'),
+      stepDetail: $('#stepDetail'),
+      detailTitle: $('#detailTitle'),
+      detailBadge: $('#detailBadge'),
+      detailMeta: $('#detailMeta'),
+      statusBar: $('#statusBar'),
+      paneCode: $('#paneCode'),
+      paneTest: $('#paneTest'),
+      paneExpected: $('#paneExpected'),
+      paneRunOutput: $('#paneRunOutput'),
+      paneTestOutput: $('#paneTestOutput'),
+      paneError: $('#paneError'),
+      paneReview: $('#paneReview'),
+      directAnswer: $('#directAnswer'),
+      // chat mode
+      agentModeBtn: $('#agentModeBtn'),
+      chatModeBtn: $('#chatModeBtn'),
+      agentLayout: $('#mainLayout'),
+      chatLayout: $('#chatLayout'),
+      chatMessages: $('#chatMessages'),
+      chatEmptyState: $('#chatEmptyState'),
+      promptForm: $('#promptForm'),
+      chatForm: $('#chatForm'),
+      chatInput: $('#chatInput'),
+      chatSendBtn: $('#chatSendBtn'),
+      chatStopBtn: $('#chatStopBtn'),
+    };
+
+    el.stopBtn.addEventListener('click', async function () {
+      if (!state.loading) return;
+      el.stopBtn.disabled = true;
+      if (state.abortController) state.abortController.abort();
+      if (state.stream) state.stream.close();
+      try {
+        if (state.runId) await fetch(baseUrl() + '/api/plan/stop/' + encodeURIComponent(state.runId), {method: 'POST'});
+        setStatus('Cancellation requested. No further steps will run.', 'partial');
+        logActivity('Cancellation requested', 'warn');
+      } catch (err) { setStatus('Could not notify server: ' + err.message, 'error'); }
+      setLoading(false);
+    });
+
+    function makeResizable(handle, target, horizontal) {
+      const drag = document.querySelector(handle);
+      drag.addEventListener('pointerdown', function(e) {
+        if (window.matchMedia('(max-width:760px)').matches) return;
+        e.preventDefault(); drag.setPointerCapture(e.pointerId);
+        const start = horizontal ? e.clientY : e.clientX;
+        const initial = horizontal ? target.getBoundingClientRect().height : target.getBoundingClientRect().width;
+        function move(ev) {
+          const delta = horizontal ? start - ev.clientY : ev.clientX - start;
+          const value = Math.max(horizontal ? 60 : 180, Math.min(horizontal ? innerHeight * 0.65 : innerWidth * 0.7, initial + delta));
+          if (horizontal) target.style.height = value + 'px'; else target.style.width = value + 'px';
+        }
+        function end() { drag.removeEventListener('pointermove', move); drag.removeEventListener('pointerup', end); }
+        drag.addEventListener('pointermove', move); drag.addEventListener('pointerup', end);
+      });
+    }
+    makeResizable('#railResize', el.rail, false);
+    makeResizable('#activityResize', el.activityLog, true);
+
+    // ---- persisted base URL ----
+    try {
+      var savedUrl = localStorage.getItem('plannerAgentBaseUrl');
+      if (savedUrl) el.baseUrlInput.value = savedUrl;
+    } catch (e) { /* storage unavailable, fall back to default */ }
+    el.baseUrlInput.addEventListener('change', function () {
+      try { localStorage.setItem('plannerAgentBaseUrl', el.baseUrlInput.value.trim()); } catch (e) {}
+    });
+
+    el.settingsBtn.addEventListener('click', function () {
+      el.settingsPanel.classList.toggle('open');
+    });
+    document.addEventListener('click', function (e) {
+      if (!el.settingsPanel.contains(e.target) && e.target !== el.settingsBtn) {
+        el.settingsPanel.classList.remove('open');
+      }
+    });
+
+    function baseUrl() {
+      var v = el.baseUrlInput.value.trim();
+      return v.replace(/\/+$/, '');
+    }
+
+    function setStatus(text, kind) {
+      el.statusBar.className = kind || '';
+      el.statusBar.innerHTML = '';
+      if (kind === 'loading') {
+        var sp = document.createElement('div');
+        sp.className = 'spinner';
+        el.statusBar.appendChild(sp);
+      }
+      var span = document.createElement('span');
+      span.textContent = text;
+      el.statusBar.appendChild(span);
+    }
+
+    function escapeHtml(s) {
+      return (s || '').replace(/[&<>]/g, function (c) {
+        return c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;';
+      });
+    }
+
+    // ---- run summary helpers ----
+    function resetRunSummary() {
+      state.runSummary = { passed: 0, failed: 0, pending: 0, total: 0, runningStep: null, finished: false };
+    }
+
+    /**
+     * Recomputes the summary from the plan steps themselves. This keeps the
+     * tallies in sync no matter which events arrived (PLAN_READY, STEP_RESULT,
+     * DONE) and no matter what order they were processed in.
+     */
+    function recomputeRunSummaryFromPlan() {
+      var s = { passed: 0, failed: 0, pending: 0, total: 0, runningStep: null, finished: state.runSummary.finished };
+      if (state.plan && state.plan.steps) {
+        s.total = state.plan.steps.length;
+        state.plan.steps.forEach(function (step) {
+          if (step.status === 'PASSED') s.passed++;
+          else if (step.status === 'FAILED') s.failed++;
+          else if (step.status === 'RUNNING') s.runningStep = step.stepNumber;
+          else s.pending++;
+        });
+      }
+      state.runSummary = s;
+      renderRunSummary();
+    }
+
+    function renderRunSummary() {
+      if (!state.plan || !state.plan.steps || !state.plan.steps.length) {
+        el.railSummary.style.display = 'none';
+        return;
+      }
+      el.railSummary.style.display = 'flex';
+      var s = state.runSummary;
+
+      el.railSummaryPass.textContent = s.passed + ' passed';
+      el.railSummaryPass.style.opacity = s.passed ? '1' : '0.5';
+
+      el.railSummaryFail.textContent = s.failed + ' failed';
+      el.railSummaryFail.style.opacity = s.failed ? '1' : '0.5';
+
+      // phase label: what's happening right now
+      if (state.loading && s.runningStep != null) {
+        el.railSummaryPhase.textContent = 'step ' + s.runningStep + '\u2026';
+      } else if (state.loading) {
+        el.railSummaryPhase.textContent = 'planning\u2026';
+      } else if (s.finished) {
+        el.railSummaryPhase.textContent = (s.failed === 0 ? 'done' : s.pending ? 'stopped' : 'done');
+      } else {
+        el.railSummaryPhase.textContent = '';
+      }
+    }
+
+    // ---- rendering the rail ----
+    function renderRail() {
+      if (!state.plan) {
+        el.railEmpty.style.display = 'block';
+        el.railGoalWrap.style.display = 'none';
+        el.railSummary.style.display = 'none';
+        el.stepList.innerHTML = '';
+        return;
+      }
+      el.railEmpty.style.display = 'none';
+      el.railGoalWrap.style.display = 'block';
+      el.railGoal.textContent = state.plan.goal || '';
+
+      el.stepList.innerHTML = '';
+      (state.plan.steps || []).forEach(function (step) {
+        var item = document.createElement('div');
+        item.className = 'step-item' + (state.selectedStep === step.stepNumber ? ' active' : '');
+        item.dataset.status = step.status || 'PENDING';
+
+        var num = document.createElement('div');
+        num.className = 'step-num';
+        num.textContent = step.stepNumber;
+
+        var body = document.createElement('div');
+        body.className = 'step-body';
+
+        var desc = document.createElement('div');
+        desc.className = 'step-desc';
+        desc.textContent = step.description || ('Step ' + step.stepNumber);
+
+        var meta = document.createElement('div');
+        meta.className = 'step-meta';
+        var status = step.status || 'PENDING';
+        var statusClass = status === 'PASSED' ? 'status-pass'
+                : status === 'FAILED' ? 'status-fail'
+                        : status === 'RUNNING' ? 'status-running'
+                                : status === 'SKIPPED' ? 'status-skipped' : '';
+        var attemptsText = step.attempts ? (' \u00b7 attempt ' + step.attempts) : '';
+        meta.innerHTML = '<span class="' + statusClass + '">' + status + '</span>' + attemptsText;
+
+        body.appendChild(desc);
+        body.appendChild(meta);
+        item.appendChild(num);
+        item.appendChild(body);
+
+        item.addEventListener('click', function () {
+          state.selectedStep = step.stepNumber;
+          renderRail();
+          renderDetail();
+          el.main.classList.add('has-selection');
+        });
+
+        el.stepList.appendChild(item);
+      });
+
+      renderRunSummary();
+    }
+
+    function renderDetail() {
+      var step = state.plan && (state.plan.steps || []).find(function (s) { return s.stepNumber === state.selectedStep; });
+      if (state.plan && state.plan.taskType === 'DIRECT') {
+        el.directAnswer.style.display = 'block';
+        el.directAnswer.textContent = state.plan.answer || '(No answer returned)';
+        el.emptyState.style.display = 'none';
+        el.stepDetail.style.display = 'none';
+        return;
+      }
+      el.directAnswer.style.display = 'none';
+      if (!step) {
+        el.emptyState.style.display = 'flex';
+        el.stepDetail.style.display = 'none';
+        return;
+      }
+      el.emptyState.style.display = 'none';
+      el.stepDetail.style.display = 'flex';
+
+      var status = step.status || 'PENDING';
+      el.detailTitle.textContent = 'Step ' + step.stepNumber + ': ' + (step.description || '');
+      el.detailBadge.textContent = status;
+      el.detailBadge.className = 'badge ' + status;
+      el.detailMeta.textContent = step.attempts
+              ? (step.attempts + ' attempt' + (step.attempts === 1 ? '' : 's') + (step.className ? ' \u00b7 class ' + step.className : ''))
+              : (step.className ? 'class ' + step.className : '');
+
+      if (step.files && Object.keys(step.files).length) {
+        el.filePicker.style.display = 'block';
+        const names = Object.keys(step.files).sort();
+        const oldValue = el.filePicker.value;
+        el.filePicker.replaceChildren();
+        names.forEach(function(name) { const opt = document.createElement('option'); opt.value=name; opt.textContent=name; el.filePicker.appendChild(opt); });
+        if (names.includes(oldValue)) el.filePicker.value = oldValue;
+        el.paneCode.textContent = step.files[el.filePicker.value] || '';
+      } else {
+        el.filePicker.style.display = 'none';
+        el.paneCode.textContent = step.generatedCode || '(no code generated)';
+      }
+      el.paneTest.textContent = step.testCode || '(No generated tests. This step is checked by AI review.)';
+      el.paneExpected.textContent = step.acceptanceCriteria || 'Review against step requirement';
+
+      // runOutput: backend writes "(skipped standalone run; ...)" when the standalone
+      // run is disabled — render that in info style, not as an error.
+      var runOut = step.runOutput || '';
+      var runIsInfo = runOut.indexOf('(skipped standalone run') === 0;
+      setOutputPane(el.paneRunOutput, runOut, false, runIsInfo);
+
+      setOutputPane(el.paneTestOutput, step.testRunOutput, status === 'FAILED', false);
+      setOutputPane(el.paneError, step.lastError, true, false);
+      setOutputPane(el.paneReview,
+              (step.reviewPassed === true ? 'APPROVED' : step.reviewPassed === false ? 'REJECTED' : 'Not reviewed yet') +
+              '\n\nCriteria: ' + (step.acceptanceCriteria || 'Not specified') +
+              '\n\nReason: ' + (step.reviewReasoning || 'Pending review'),
+              step.reviewPassed === false, false);
+    }
+
+    function setOutputPane(node, text, failStyle, infoStyle) {
+      node.classList.remove('empty', 'fail-output', 'info-output');
+      if (!text || !text.trim()) {
+        node.classList.add('empty');
+        node.textContent = '';
+        return;
+      }
+      node.textContent = text;
+      if (failStyle) node.classList.add('fail-output');
+      if (infoStyle) node.classList.add('info-output');
+    }
+
+    el.filePicker.addEventListener('change', function() {
+      const step = state.plan && (state.plan.steps || []).find(s => s.stepNumber === state.selectedStep);
+      el.paneCode.textContent = step && step.files ? step.files[el.filePicker.value] || '' : '';
+    });
+
+    // ---- tabs ----
+    document.querySelectorAll('.tab').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        document.querySelectorAll('.tab').forEach(function (t) { t.classList.remove('active'); });
+        document.querySelectorAll('.tab-pane').forEach(function (p) { p.classList.remove('active'); });
+        tab.classList.add('active');
+        document.querySelector('.tab-pane[data-pane="' + tab.dataset.tab + '"]').classList.add('active');
+      });
+    });
+
+    // ---- copy buttons ----
+    document.querySelectorAll('.copy-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var which = btn.dataset.copy;
+        var text = which === 'code' ? el.paneCode.textContent : el.paneTest.textContent;
+        if (!text) return;
+        navigator.clipboard.writeText(text).then(function () {
+          var orig = btn.textContent;
+          btn.textContent = 'Copied';
+          setTimeout(function () { btn.textContent = orig; }, 1200);
+        }).catch(function () {});
+      });
+    });
+
+    // ---- back button (mobile) ----
+    el.backBtn.addEventListener('click', function () {
+      el.main.classList.remove('has-selection');
+    });
+
+    // ---- submit ----
+    el.form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (state.loading) return;
+      var prompt = el.input.value.trim();
+      if (!prompt) { el.input.focus(); return; }
+      if (state.initialModelsFetchDone && !state.activeModel) {
+        setStatus('No model selected \u2014 open Models (top right) and select one before running a prompt.', 'error');
+        openModelsPanel();
+        return;
+      }
+      runPrompt(prompt, el.mode.value);
+    });
+
+    function setLoading(loading) {
+      state.loading = loading;
+      el.runBtn.disabled = loading;
+      el.stopBtn.disabled = !loading;
+      el.input.disabled = loading;
+      el.mode.disabled = loading;
+      renderRunSummary();
+    }
+
+    function runPrompt(prompt, mode) {
+      state.plan = null;
+      state.stream = null; state.runId = null; state.abortController = null;
+      state.selectedStep = null;
+      resetRunSummary();
+      renderRail();
+      renderDetail();
+      el.main.classList.remove('has-selection');
+      clearActivityLog();
+
+      if (mode === 'plan-only') {
+        runPlanOnly(prompt);
+      } else {
+        runExecuteStreaming(prompt);
+      }
+    }
+
+    function runPlanOnly(prompt) {
+      setLoading(true);
+      setStatus('Asking the model for a plan\u2026', 'loading');
+
+      var url = baseUrl() + '/api/plan/plan-only';
+      var controller = new AbortController();
+      state.abortController = controller;
+      var timeoutId = setTimeout(function () { controller.abort(); }, 1000 * 60 * 20);
+
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: prompt }),
+        signal: controller.signal
+      })
+              .then(function (res) {
+                clearTimeout(timeoutId);
+                if (!res.ok) {
+                  return res.text().then(function (t) { throw new Error('HTTP ' + res.status + (t ? (' \u2014 ' + t) : '')); });
+                }
+                return res.json();
+              })
+              .then(function (data) {
+                state.plan = data;
+                setStatus('Plan generated: ' + ((data.steps && data.steps.length) || 0) + ' step(s). Not executed.', '');
+                renderRail();
+                recomputeRunSummaryFromPlan();
+                selectFirstStepIfAny();
+                renderDetail();
+              })
+              .catch(function (err) {
+                clearTimeout(timeoutId);
+                var msg = err.name === 'AbortError'
+                        ? 'Request timed out. Local models can be slow \u2014 try a smaller model or simpler prompt.'
+                        : ('Request failed: ' + err.message + '. Check the API base URL in Settings and that the Spring Boot app is running.');
+                setStatus(msg, 'error');
+              })
+              .finally(function () { setLoading(false); });
+    }
+
+    /** Streams /api/plan/execute-stream via EventSource, rendering each ProgressEvent as it arrives. */
+    function runExecuteStreaming(prompt) {
+      setLoading(true);
+      setStatus('Planning\u2026', 'loading');
+      showActivityLog();
+
+      state.runId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('run-' + Date.now());
+      var url = baseUrl() + '/api/plan/execute-stream?runId=' + encodeURIComponent(state.runId) + '&prompt=' + encodeURIComponent(prompt);
+      var source;
+      try {
+        source = new EventSource(url);
+        state.stream = source;
+      } catch (err) {
+        setStatus('Could not open live connection: ' + err.message, 'error');
+        setLoading(false);
+        return;
+      }
+
+      // safety net: if EventSource never connects (CORS/network), don't hang forever
+      var sawAnyEvent = false;
+      var connectTimeout = setTimeout(function () {
+        if (!sawAnyEvent) {
+          setStatus('No response from server. Check the API base URL in Settings and that the Spring Boot app is running.', 'error');
+          source.close();
+          setLoading(false);
+        }
+      }, 15000);
+
+      source.addEventListener('progress', function (e) {
+        sawAnyEvent = true;
+        clearTimeout(connectTimeout);
+        var event;
+        try {
+          event = JSON.parse(e.data);
+        } catch (parseErr) {
+          return;
+        }
+        handleProgressEvent(event);
+
+        if (event.type === 'DONE' || event.type === 'ERROR') {
+          source.close();
+          setLoading(false);
+        }
+      });
+
+      source.onerror = function () {
+        clearTimeout(connectTimeout);
+        if (state.loading) {
+          setStatus('Connection to server was lost mid-run. Partial results (if any) are shown below.', 'error');
+          source.close();
+          setLoading(false);
+        }
+      };
+    }
+
+    function handleProgressEvent(event) {
+      switch (event.type) {
+        case 'PLANNING':
+          setStatus(event.message || 'Planning\u2026', 'loading');
+          logActivity(event.message, 'active');
+          break;
+
+        case 'PLAN_READY':
+          state.plan = { goal: event.plan.goal, steps: event.plan.steps || [], taskType: event.plan.taskType, answer: event.plan.answer };
+          // give every step a baseline PENDING status so the summary starts clean
+          state.plan.steps.forEach(function (s) { if (!s.status) s.status = 'PENDING'; });
+          setStatus('Plan ready (' + state.plan.steps.length + ' step' + (state.plan.steps.length === 1 ? '' : 's') + '). Starting step 1\u2026', 'loading');
+          logActivity(event.message, 'active');
+          renderRail();
+          recomputeRunSummaryFromPlan();
+          selectFirstStepIfAny();
+          break;
+
+        case 'STEP_START':
+          setStatus(event.message, 'loading');
+          logActivity(event.message, 'active');
+          patchStep(event.stepNumber, { status: 'RUNNING' });
+          break;
+
+        case 'STEP_PHASE':
+          setStatus(event.message, 'loading');
+          // classify the new phases for nicer colouring
+          logActivity(event.message, classifyPhaseMessage(event.message));
+          break;
+
+        case 'STEP_RETRY':
+          setStatus(event.message, 'loading');
+          logActivity(event.message, 'active');
+          break;
+
+        case 'STEP_RESULT':
+          logActivity(event.message, event.status === 'PASSED' ? 'pass' : 'fail');
+          if (event.step) {
+            replaceStep(event.step);
+          } else {
+            patchStep(event.stepNumber, { status: event.status, attempts: event.attempt });
+          }
+          recomputeRunSummaryFromPlan();
+          break;
+
+        case 'DONE':
+          if (event.finalResult) {
+            state.plan = {
+              goal: event.finalResult.goal || (state.plan && state.plan.goal),
+              steps: event.finalResult.steps || (state.plan && state.plan.steps) || [],
+              taskType: event.finalResult.taskType,
+              answer: event.finalResult.answer
+            };
+            renderRail();
+            renderDetail();
+          }
+          state.runSummary.finished = true;
+          recomputeRunSummaryFromPlan();
+          renderFinalStatus(event);
+          break;
+
+        case 'ERROR':
+          setStatus(event.message || 'An error occurred.', 'error');
+          logActivity(event.message, 'fail');
+          break;
+      }
+    }
+
+    /**
+     * Colours an activity line based on the wording of the phase message.
+     * Keeps things readable when the backend emits phase strings we haven't
+     * seen before — defaults to muted.
+     */
+    function classifyPhaseMessage(msg) {
+      if (!msg) return '';
+      if (msg.indexOf('passed') !== -1) return 'pass';
+      if (msg.indexOf('RESULT:FAIL') !== -1) return 'fail';
+      if (msg.indexOf('exited with code') !== -1) return 'fail';
+      if (msg.indexOf('timed out') !== -1) return 'fail';
+      if (msg.indexOf('did not print') !== -1) return 'warn';
+      if (msg.indexOf('failed') !== -1 && msg.indexOf('failing test') === -1) return 'fail';
+      if (msg.indexOf('failing test') !== -1) return 'warn';
+      if (msg.indexOf('couldn\u2019t get a fix') !== -1) return 'warn';
+      if (msg.indexOf('stopping pipeline') !== -1) return 'warn';
+      if (msg.indexOf('skipped') !== -1) return 'warn';
+      return 'active';
+    }
+
+    function renderFinalStatus(event) {
+      var result = event.finalResult;
+      var steps = (result && result.steps) || (state.plan && state.plan.steps) || [];
+      var total = steps.length;
+      var passed = steps.filter(function (s) { return s.status === 'PASSED'; }).length;
+      var failed = steps.filter(function (s) { return s.status === 'FAILED'; }).length;
+      var pending = total - passed - failed;
+
+      var message;
+      var kind;
+      if (result && result.taskType === 'DIRECT') {
+        message = event.message || 'Answer generated.';
+        kind = result.overallSuccess ? 'success' : 'error';
+      } else if (total === 0) {
+        message = event.message || 'Done.';
+        kind = 'error';
+      } else if (failed === 0 && pending === 0) {
+        message = 'All ' + total + ' step' + (total === 1 ? '' : 's') + ' passed.';
+        kind = 'success';
+      } else if (passed === 0) {
+        message = 'No steps passed (' + failed + ' failed' + (pending ? ', ' + pending + ' not run' : '') + '). See the failing steps for details.';
+        kind = 'error';
+      } else {
+        message = passed + ' of ' + total + ' step' + (total === 1 ? '' : 's') + ' passed'
+                + (failed ? ', ' + failed + ' failed' : '')
+                + (pending ? ', ' + pending + ' not run' : '')
+                + '. Working code is available for every step that ran.';
+        kind = 'partial';
+      }
+      setStatus(message, kind);
+      logActivity(message, kind === 'success' ? 'pass' : (kind === 'error' ? 'fail' : 'warn'));
+    }
+
+    function selectFirstStepIfAny() {
+      if (state.plan && state.plan.steps && state.plan.steps.length) {
+        state.selectedStep = state.plan.steps[0].stepNumber;
+        renderRail();
+        renderDetail();
+      }
+    }
+
+    function patchStep(stepNumber, fields) {
+      if (!state.plan || !state.plan.steps) return;
+      var step = state.plan.steps.find(function (s) { return s.stepNumber === stepNumber; });
+      if (!step) return;
+      Object.assign(step, fields);
+      renderRail();
+      if (state.selectedStep === stepNumber) renderDetail();
+    }
+
+    function replaceStep(updatedStep) {
+      if (!state.plan || !state.plan.steps) return;
+      var idx = state.plan.steps.findIndex(function (s) { return s.stepNumber === updatedStep.stepNumber; });
+      if (idx === -1) {
+        state.plan.steps.push(updatedStep);
+      } else {
+        state.plan.steps[idx] = updatedStep;
+      }
+      renderRail();
+      if (state.selectedStep === updatedStep.stepNumber) renderDetail();
+    }
+
+    // ---- activity log ----
+    function showActivityLog() {
+      el.activityLog.classList.add('visible');
+      el.activityLog.classList.add('expanded');
+    }
+    function clearActivityLog() {
+      el.activityFeed.innerHTML = '';
+      el.activityToggleCount.textContent = '';
+    }
+    function logActivity(message, kind) {
+      if (!message) return;
+      showActivityLog();
+      var line = document.createElement('div');
+      line.className = 'activity-line' + (kind ? ' ' + kind : '');
+      var dot = document.createElement('span');
+      dot.className = 'dot';
+      var text = document.createElement('span');
+      text.textContent = message;
+      line.appendChild(dot);
+      line.appendChild(text);
+      el.activityFeed.appendChild(line);
+      el.activityFeed.scrollTop = el.activityFeed.scrollHeight;
+      var count = el.activityFeed.children.length;
+      el.activityToggleCount.textContent = count + ' event' + (count === 1 ? '' : 's');
+    }
+    el.activityToggle.addEventListener('click', function () {
+      el.activityLog.classList.toggle('expanded');
+    });
+
+    // =========================================================================
+    // ---- model management panel ----
+    // =========================================================================
+
+    function openModelsPanel() {
+      el.modelsOverlay.classList.add('open');
+      el.modelsPanel.classList.add('open');
+      fetchModels();
+    }
+    function closeModelsPanel() {
+      el.modelsOverlay.classList.remove('open');
+      el.modelsPanel.classList.remove('open');
+    }
+    el.modelSort.addEventListener('change', renderModelsList);
+    el.modelsBtn.addEventListener('click', openModelsPanel);
+    el.closeModelsBtn.addEventListener('click', closeModelsPanel);
+    el.modelsOverlay.addEventListener('click', closeModelsPanel);
+    el.refreshModelsBtn.addEventListener('click', fetchModels);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeModelsPanel();
+    });
+
+    function updateChip() {
+      if (state.activeModel) {
+        el.chipDot.parentElement.classList.add('has-model');
+        el.chipName.textContent = state.activeModel;
+      } else {
+        el.chipDot.parentElement.classList.remove('has-model');
+        el.chipName.textContent = 'No model selected';
+      }
+    }
+
+    function fetchModels() {
+      state.modelsLoading = true;
+      el.modelsList.innerHTML = '<div class="models-list-status">Loading models&hellip;</div>';
+
+      fetch(baseUrl() + '/api/models')
+              .then(function (res) {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.json();
+              })
+              .then(function (data) {
+                state.models = data.models || [];
+                state.activeModel = data.activeModel || null;
+                updateChip();
+                renderModelsList();
+              })
+              .catch(function (err) {
+                el.modelsList.innerHTML = '<div class="models-list-status">Could not load models: ' +
+                        escapeHtml(err.message) + '<br><br>Check the API base URL in Settings, and that Ollama is installed and on PATH on the server.</div>';
+              })
+              .finally(function () {
+                state.modelsLoading = false;
+                state.initialModelsFetchDone = true;
+              });
+    }
+
+    function renderModelsList() {
+      if (!state.models.length) {
+        el.modelsList.innerHTML = '<div class="models-list-status">No local models found. Pull one with <code class="mono">ollama pull &lt;model&gt;</code>.</div>';
+        return;
+      }
+      el.modelsList.innerHTML = '';
+      const sort = el.modelSort.value;
+      const models = [...state.models].sort(function(a,b) {
+        if (sort.startsWith('size')) {
+          const size = function(x) { const m = String(x.size || '').match(/([\d.]+)\s*(KB|MB|GB|TB|B)/i); return m ? Number(m[1]) * ({B:1,KB:1024,MB:1048576,GB:1073741824,TB:1099511627776}[m[2].toUpperCase()] || 1) : 0; };
+          return (size(a)-size(b)) * (sort.endsWith('desc') ? -1 : 1);
+        }
+        return String(a.name).localeCompare(String(b.name), undefined, {numeric:true}) * (sort.endsWith('desc') ? -1 : 1);
+      });
+      models.forEach(function (m) {
+        var row = document.createElement('div');
+        row.className = 'model-row' + (m.active ? ' is-active' : '');
+
+        var top = document.createElement('div');
+        top.className = 'model-row-top';
+
+        var name = document.createElement('div');
+        name.className = 'model-row-name';
+        name.textContent = m.name;
+
+        var pills = document.createElement('div');
+        pills.className = 'model-pills';
+        if (m.active) {
+          var activePill = document.createElement('span');
+          activePill.className = 'pill active';
+          activePill.textContent = 'ACTIVE';
+          pills.appendChild(activePill);
+        }
+        if (m.loaded) {
+          var loadedPill = document.createElement('span');
+          loadedPill.className = 'pill loaded';
+          loadedPill.textContent = 'LOADED';
+          pills.appendChild(loadedPill);
+        }
+
+        top.appendChild(name);
+        top.appendChild(pills);
+
+        var meta = document.createElement('div');
+        meta.className = 'model-row-meta';
+        meta.innerHTML =
+                '<span><b>' + escapeHtml(m.size || '\u2014') + '</b></span>' +
+                '<span>' + escapeHtml(m.modified || '\u2014') + '</span>' +
+                '<span style="opacity:0.7;">' + escapeHtml(m.id || '') + '</span>';
+
+        var actions = document.createElement('div');
+        actions.className = 'model-row-actions';
+
+        var selectBtn = document.createElement('button');
+        selectBtn.type = 'button';
+        if (m.active) {
+          selectBtn.className = 'btn-select is-active';
+          selectBtn.textContent = 'Selected';
+          selectBtn.disabled = true;
+        } else {
+          selectBtn.className = 'btn-select';
+          selectBtn.textContent = 'Select & load';
+          selectBtn.addEventListener('click', function () { selectModel(m.name, selectBtn); });
+        }
+
+        var unloadBtn = document.createElement('button');
+        unloadBtn.type = 'button';
+        unloadBtn.className = 'btn-unload';
+        unloadBtn.textContent = 'Unload';
+        unloadBtn.disabled = !m.loaded;
+        unloadBtn.addEventListener('click', function () { unloadModel(m.name, unloadBtn); });
+
+        actions.appendChild(selectBtn);
+        actions.appendChild(unloadBtn);
+
+        row.appendChild(top);
+        row.appendChild(meta);
+        row.appendChild(actions);
+        el.modelsList.appendChild(row);
+      });
+    }
+
+    function selectModel(modelName, btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = 'Loading\u2026';
+      fetch(baseUrl() + '/api/models/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelName: modelName })
+      })
+              .then(function (res) { return res.json(); })
+              .then(function (data) {
+                if (data.success) {
+                  setStatus(data.message || ('Selected ' + modelName), 'success');
+                } else {
+                  setStatus(data.message || 'Failed to select model', 'error');
+                }
+                fetchModels();
+              })
+              .catch(function (err) {
+                setStatus('Failed to select model: ' + err.message, 'error');
+                btnEl.disabled = false;
+                btnEl.textContent = 'Select & load';
+              });
+    }
+
+    function unloadModel(modelName, btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = 'Unloading\u2026';
+      fetch(baseUrl() + '/api/models/unload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelName: modelName })
+      })
+              .then(function (res) { return res.json(); })
+              .then(function (data) {
+                if (data.success) {
+                  setStatus(data.message || ('Unloaded ' + modelName), '');
+                } else {
+                  setStatus(data.message || 'Failed to unload model', 'error');
+                }
+                fetchModels();
+              })
+              .catch(function (err) {
+                setStatus('Failed to unload model: ' + err.message, 'error');
+              })
+              .finally(function () {
+                btnEl.textContent = 'Unload';
+              });
+    }
+
+    // =========================================================================
+    // ---- agent / chat mode switch ----
+    // =========================================================================
+
+    function setAppMode(mode) {
+      if (state.appMode === mode) return;
+      state.appMode = mode;
+      var isChat = mode === 'chat';
+
+      el.agentModeBtn.classList.toggle('active', !isChat);
+      el.agentModeBtn.setAttribute('aria-selected', String(!isChat));
+      el.chatModeBtn.classList.toggle('active', isChat);
+      el.chatModeBtn.setAttribute('aria-selected', String(isChat));
+
+      el.agentLayout.style.display = isChat ? 'none' : 'flex';
+      el.chatLayout.style.display = isChat ? 'flex' : 'none';
+      el.promptForm.style.display = isChat ? 'none' : 'flex';
+      el.chatForm.style.display = isChat ? 'flex' : 'none';
+
+      // the activity log / status bar are agent-run concepts; keep them out of the way in chat mode
+      if (isChat) {
+        el.activityLog.classList.remove('visible', 'expanded');
+      }
+      setStatus(isChat ? 'Chat mode \u2014 responses stream in as the model generates them.' : 'Ready.', '');
+
+      if (isChat) {
+        el.chatInput.focus();
+      } else {
+        el.input.focus();
+      }
+    }
+
+    el.agentModeBtn.addEventListener('click', function () { setAppMode('agent'); });
+    el.chatModeBtn.addEventListener('click', function () { setAppMode('chat'); });
+
+    // =========================================================================
+    // ---- chat mode ----
+    // =========================================================================
+
+    /**
+     * Splits model output into alternating plain-text and fenced-code segments so code can be
+     * rendered in its own copyable block (per the user's request) while prose stays as prose.
+     * Returns an array of {type:'text'|'code', content, lang}.
+     */
+    function splitIntoSegments(text) {
+      var segments = [];
+      var fenceRe = /```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g;
+      var lastIndex = 0;
+      var match;
+      while ((match = fenceRe.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+          segments.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+        }
+        segments.push({ type: 'code', lang: (match[1] || '').trim(), content: match[2] });
+        lastIndex = fenceRe.lastIndex;
+      }
+      if (lastIndex < text.length) {
+        segments.push({ type: 'text', content: text.slice(lastIndex) });
+      }
+      if (segments.length === 0) segments.push({ type: 'text', content: text });
+      return segments;
+    }
+
+    /** Renders chat bubble content: paragraphs for text, a header+copy+pre block for each code fence. */
+    function renderChatContent(container, text) {
+      container.innerHTML = '';
+      var segments = splitIntoSegments(text || '');
+      segments.forEach(function (seg) {
+        if (seg.type === 'code') {
+          var block = document.createElement('div');
+          block.className = 'chat-code-block';
+
+          var header = document.createElement('div');
+          header.className = 'chat-code-header';
+          var langLabel = document.createElement('span');
+          langLabel.textContent = seg.lang || 'code';
+          var copyBtn = document.createElement('button');
+          copyBtn.type = 'button';
+          copyBtn.className = 'copy-btn';
+          copyBtn.textContent = 'Copy';
+          copyBtn.addEventListener('click', function () {
+            navigator.clipboard.writeText(seg.content).then(function () {
+              var orig = copyBtn.textContent;
+              copyBtn.textContent = 'Copied';
+              setTimeout(function () { copyBtn.textContent = orig; }, 1200);
+            }).catch(function () {});
+          });
+          header.appendChild(langLabel);
+          header.appendChild(copyBtn);
+
+          var pre = document.createElement('pre');
+          pre.textContent = seg.content.replace(/\n$/, '');
+
+          block.appendChild(header);
+          block.appendChild(pre);
+          container.appendChild(block);
+        } else {
+          if (!seg.content.trim()) return;
+          seg.content.split(/\n{2,}/).forEach(function (para) {
+            if (!para.trim()) return;
+            var p = document.createElement('p');
+            p.textContent = para;
+            container.appendChild(p);
+          });
+        }
+      });
+    }
+
+    function addChatTurn(role, initialText) {
+      if (el.chatEmptyState) el.chatEmptyState.style.display = 'none';
+      var turn = document.createElement('div');
+      turn.className = 'chat-turn ' + role;
+
+      var roleLabel = document.createElement('div');
+      roleLabel.className = 'chat-role';
+      roleLabel.textContent = role === 'user' ? 'You' : 'Assistant';
+
+      var bubble = document.createElement('div');
+      bubble.className = 'chat-bubble';
+      if (role === 'user') {
+        bubble.textContent = initialText || '';
+      } else {
+        renderChatContent(bubble, initialText || '');
+      }
+
+      turn.appendChild(roleLabel);
+      turn.appendChild(bubble);
+      el.chatMessages.appendChild(turn);
+      el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
+      return bubble;
+    }
+
+    function setChatLoading(loading) {
+      state.chatLoading = loading;
+      el.chatSendBtn.disabled = loading;
+      el.chatStopBtn.disabled = !loading;
+      el.chatInput.disabled = loading;
+    }
+
+    el.chatForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (state.chatLoading) return;
+      var message = el.chatInput.value.trim();
+      if (!message) { el.chatInput.focus(); return; }
+      if (state.initialModelsFetchDone && !state.activeModel) {
+        setStatus('No model selected \u2014 open Models (top right) and select one before chatting.', 'error');
+        openModelsPanel();
+        return;
+      }
+      sendChatMessage(message);
+    });
+
+    el.chatStopBtn.addEventListener('click', function () {
+      if (!state.chatRunId) return;
+      fetch(baseUrl() + '/api/chat/stop/' + encodeURIComponent(state.chatRunId), { method: 'POST' }).catch(function () {});
+      if (state.chatStream) { state.chatStream.close(); }
+      setChatLoading(false);
+      setStatus('Chat stopped.', '');
+    });
+
+    function sendChatMessage(message) {
+      el.chatInput.value = '';
+      addChatTurn('user', message);
+      state.chatHistory.push({ role: 'user', content: message });
+
+      var assistantBubble = addChatTurn('assistant', '');
+      assistantBubble.classList.add('streaming');
+      var accumulated = '';
+
+      setChatLoading(true);
+      setStatus('Generating response\u2026 (local models can take a while)', 'loading');
+
+      state.chatRunId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('chat-' + Date.now());
+      var historyParam = encodeURIComponent(JSON.stringify(state.chatHistory.slice(0, -1))); // history BEFORE this message
+      var url = baseUrl() + '/api/chat/stream?runId=' + encodeURIComponent(state.chatRunId) +
+        '&message=' + encodeURIComponent(message) + '&history=' + historyParam;
+
+      var source;
+      try {
+        source = new EventSource(url);
+        state.chatStream = source;
+      } catch (err) {
+        assistantBubble.classList.remove('streaming');
+        assistantBubble.classList.add('chat-error-bubble');
+        assistantBubble.textContent = 'Could not open live connection: ' + err.message;
+        setChatLoading(false);
+        setStatus('Could not open live connection: ' + err.message, 'error');
+        return;
+      }
+
+      var sawAnyEvent = false;
+      var connectTimeout = setTimeout(function () {
+        if (!sawAnyEvent) {
+          assistantBubble.classList.remove('streaming');
+          assistantBubble.classList.add('chat-error-bubble');
+          assistantBubble.textContent = 'No response from server. Check the API base URL in Settings and that the Spring Boot app is running.';
+          setStatus('No response from server.', 'error');
+          source.close();
+          setChatLoading(false);
+        }
+      }, 15000);
+
+      source.addEventListener('token', function (e) {
+        sawAnyEvent = true;
+        clearTimeout(connectTimeout);
+        var data;
+        try { data = JSON.parse(e.data); } catch (parseErr) { return; }
+        accumulated += data.text || '';
+        renderChatContent(assistantBubble, accumulated);
+        assistantBubble.classList.add('streaming');
+        el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
+      });
+
+      source.addEventListener('done', function () {
+        clearTimeout(connectTimeout);
+        assistantBubble.classList.remove('streaming');
+        state.chatHistory.push({ role: 'assistant', content: accumulated });
+        setStatus('Ready.', '');
+        source.close();
+        setChatLoading(false);
+      });
+
+      source.addEventListener('error', function (e) {
+        clearTimeout(connectTimeout);
+        var msg = 'The model failed to respond.';
+        try {
+          var data = JSON.parse(e.data);
+          if (data && data.message) msg = data.message;
+        } catch (parseErr) { /* some 'error' events are plain EventSource errors with no data */ }
+        assistantBubble.classList.remove('streaming');
+        if (!accumulated) {
+          assistantBubble.classList.add('chat-error-bubble');
+          assistantBubble.textContent = msg;
+        }
+        setStatus(msg, 'error');
+        source.close();
+        setChatLoading(false);
+      });
+
+      source.onerror = function () {
+        clearTimeout(connectTimeout);
+        if (state.chatLoading) {
+          assistantBubble.classList.remove('streaming');
+          if (!accumulated) {
+            assistantBubble.classList.add('chat-error-bubble');
+            assistantBubble.textContent = 'Connection to server was lost.';
+          }
+          setStatus('Connection to server was lost mid-response.', 'error');
+          source.close();
+          setChatLoading(false);
+        }
+      };
+    }
+
+    // fetch active model on load so the header chip isn't empty if a model was already selected server-side
+    fetchModels();
+
+    renderRail();
+    renderDetail();
+  })();
+</script>
+
+</body>
+</html>

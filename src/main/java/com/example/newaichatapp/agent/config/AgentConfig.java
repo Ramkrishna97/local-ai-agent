@@ -40,7 +40,7 @@ public final class AgentConfig {
      * Set -Dagent.continueOnFailure=false to restore the old "stop on first failure" behaviour.
      */
     public static final boolean CONTINUE_ON_STEP_FAILURE =
-            Boolean.parseBoolean(System.getProperty("agent.continueOnFailure", "true"));
+            Boolean.parseBoolean(System.getProperty("agent.continueOnFailure", "false"));
 
     /**
      * When true (default), generatedCode is only compiled, never run on its own.
@@ -54,7 +54,7 @@ public final class AgentConfig {
      * Resolution order on startup: -Dollama.model system property, then the
      * last selection persisted to ACTIVE_MODEL_FILE, then null.
      */
-    private static volatile String activeModel = resolveInitialActiveModel();
+    private static volatile String activeModel = null;
 
     private static String resolveInitialActiveModel() {
         String fromProperty = System.getProperty("ollama.model", null);

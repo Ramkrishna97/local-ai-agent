@@ -57,7 +57,7 @@ public class JavaCodeRunner {
                         fileManager.getJavaFileObjectsFromFiles(List.of(sourceFile.toFile()));
 
                 JavaCompiler.CompilationTask task = compiler.getTask(
-                        diagnosticsWriter, fileManager, diagnostics, null, null, units);
+                        diagnosticsWriter, fileManager, diagnostics, List.of("-classpath", workDir.toAbsolutePath().toString(), "-encoding", "UTF-8"), null, units);
 
                 boolean ok = task.call();
                 result.success = ok;
@@ -81,30 +81,42 @@ public class JavaCodeRunner {
     public RunResult run(Path classOutputDir, String className) {
         RunResult result = new RunResult();
         String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        ProcessBuilder pb = new ProcessBuilder(javaBin, "-cp", classOutputDir.toAbsolutePath().toString(), className);
-        pb.redirectErrorStream(false);
+        Path stdoutFile = null;
+        Path stderrFile = null;
         try {
-            Process process = pb.start();
-            String stdout = readStream(process.getInputStream());
-            String stderr = readStream(process.getErrorStream());
+            stdoutFile = Files.createTempFile("agent-stdout-", ".log");
+            stderrFile = Files.createTempFile("agent-stderr-", ".log");
+            ProcessBuilder processBuilder = new ProcessBuilder(javaBin, "-cp", classOutputDir.toAbsolutePath().toString(), className);
+            processBuilder.redirectOutput(stdoutFile.toFile());
+            processBuilder.redirectError(stderrFile.toFile());
+            Process process = processBuilder.start();
             boolean finished = process.waitFor(AgentConfig.PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-
             if (!finished) {
                 process.destroyForcibly();
+                process.waitFor(5, TimeUnit.SECONDS);
                 result.timedOut = true;
-                result.success = false;
-                result.stderr = "Process timed out after " + AgentConfig.PROCESS_TIMEOUT_SECONDS + "s";
-                return result;
+                result.exitCode = -1;
+            } else {
+                result.exitCode = process.exitValue();
             }
-            result.exitCode = process.exitValue();
-            result.stdout = stdout;
-            result.stderr = stderr;
-            result.success = result.exitCode == 0;
+            result.stdout = readBounded(stdoutFile);
+            result.stderr = readBounded(stderrFile);
+            if (result.timedOut) result.stderr += "\nProcess timed out.";
+            result.success = !result.timedOut && result.exitCode == 0;
         } catch (Exception e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             result.success = false;
             result.stderr = "Process execution error: " + e;
+        } finally {
+            try { if (stdoutFile != null) Files.deleteIfExists(stdoutFile); } catch (IOException ignored) { }
+            try { if (stderrFile != null) Files.deleteIfExists(stderrFile); } catch (IOException ignored) { }
         }
         return result;
+    }
+
+    private String readBounded(Path path) throws IOException {
+        if (Files.size(path) > 1024 * 1024) throw new IOException("Generated process output exceeds 1 MiB");
+        return Files.readString(path, StandardCharsets.UTF_8);
     }
 
     private String readStream(InputStream in) throws IOException {
